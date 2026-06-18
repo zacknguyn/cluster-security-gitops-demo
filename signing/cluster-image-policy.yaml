@@ -1,0 +1,14 @@
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: w10-image-policy
+spec:
+  images:
+  - glob: ghcr.io/zacknguyn/w10-api@*
+  authorities:
+  - key:
+      data: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEI3MAFvAbzj7mLAQRD9Xy2xDjasoZ
+        8laTFjx6bYbAXN1KUxqgRfDaV2KBvuPfDpt86XYjvFtz04dzsiCH6gG+6A==
+        -----END PUBLIC KEY-----

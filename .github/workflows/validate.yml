@@ -8,7 +8,7 @@ on:
     - 'app-alert/**'
     - 'app-common/**'
     - 'argocd/**'
-    # W10 se them: rbac/**, gatekeeper/**, eso/**, signing/**
+    - 'signing/**'
 
 jobs:
   validate:

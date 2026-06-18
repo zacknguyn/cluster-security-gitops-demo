@@ -55,12 +55,33 @@ jobs:
             type=sha,prefix=v${{ steps.semver.outputs.version }}-
 
       - name: Build and push Docker image
+        id: build-and-push
         uses: docker/build-push-action@v6
         with:
           context: ./src/api
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.semver.outputs.version }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
+      - name: Sign the image with Cosign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ''
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }} \
+            --yes
 
       - name: Update rollout.yaml with new version
         run: |

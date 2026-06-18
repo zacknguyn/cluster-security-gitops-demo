@@ -63,3 +63,22 @@ spec:
     - apiGroups: [""]
       kinds: ["Pod"]
     namespaces: ["demo"]
+
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata:
+  name: demo-trusted-registries
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces: ["demo"]
+  parameters:
+    registries:
+    - "ghcr.io/zacknguyn/"
+    - "quay.io/"
+    - "docker.io/"
+    - "registry.k8s.io/"

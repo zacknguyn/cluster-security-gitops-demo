@@ -46,3 +46,63 @@ spec:
         not container.resources.limits
         msg := sprintf("container %v must specify resource limits", [container.name])
       }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sblocklatesttag
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBlockLatestTag
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package k8sblocklatesttag
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        endswith(container.image, ":latest")
+        msg := sprintf("container %v uses :latest tag", [container.name])
+      }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sblockrootuser
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBlockRootUser
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package k8sblockrootuser
+      violation[{"msg": msg}] {
+        input.review.object.spec.securityContext.runAsUser == 0
+        msg := "running as root (runAsUser: 0) is forbidden"
+      }
+      violation[{"msg": msg}] {
+        container := input.review.object.spec.containers[_]
+        container.securityContext.runAsUser == 0
+        msg := sprintf("container %v runs as root", [container.name])
+      }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sblockhostnetwork
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBlockHostNetwork
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package k8sblockhostnetwork
+      violation[{"msg": msg}] {
+        input.review.object.spec.hostNetwork
+        msg := "hostNetwork: true is forbidden"
+      }

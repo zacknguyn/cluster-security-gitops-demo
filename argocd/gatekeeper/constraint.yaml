@@ -24,3 +24,42 @@ spec:
     - apiGroups: [""]
       kinds: ["Pod"]
     namespaces: ["demo"]
+
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBlockLatestTag
+metadata:
+  name: demo-no-latest-tag
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces: ["demo"]
+
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBlockRootUser
+metadata:
+  name: demo-no-root-user
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces: ["demo"]
+
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBlockHostNetwork
+metadata:
+  name: demo-no-host-network
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces: ["demo"]

@@ -3,7 +3,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: api
+  name: app
   namespace: demo
   labels:
     app: api

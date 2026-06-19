@@ -183,6 +183,7 @@ kubectl apply -f pod.yaml -n demo
    4. runAsUser: 0?              ──Yes─→ DENY
    5. hostNetwork: true?         ──Yes─→ DENY
    6. Registry whitelisted?      ──No──→ DENY
+     (Constraints match via namespaceSelector label, not hardcoded ns names)
           │
          All pass
           │
@@ -421,11 +422,13 @@ spec:
     rego: |
       package k8srequiredlabels
       # violation: fires if required labels are missing
+      # NOTE: provided must be a SET of keys, not the raw labels object
+      # NOTE: use 'some i' syntax instead of [_] in set comprehensions
       violation[{"msg": msg, "details": details}] {
-        provided := input.review.object.metadata.labels      # Pod's labels
-        required := {label | label = input.constraint.spec.labels[_]}  # Param labels
-        missing := required - provided                       # Set difference
-        count(missing) > 0                                   # Any missing?
+        provided_keys := {key | input.review.object.metadata.labels[key]}
+        required_labels := {label | some i; label := input.parameters.labels[i]}
+        missing := required_labels - provided_keys
+        count(missing) > 0
         msg := sprintf("missing labels: %v", [missing])
         details := {"missing": missing}
       }
@@ -515,34 +518,37 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]                  # Apply to Pods only
-    namespaces: ["demo"]              # In demo namespace only
+    namespaceSelector:                 # ← Changed from namespaces to label selector
+      matchLabels:
+        gatekeeper: enforced           # Any namespace with this label gets it
   parameters:
     labels: ["owner"]                 # Require "owner" label
 
 # Constraint 2 — K8sRequiredResources
 kind: K8sRequiredResources
 name: demo-must-have-limits
-# match: Pods in demo namespace
+# match: any namespace with label gatekeeper=enforced
 # (no parameters needed — always checks all containers have limits)
 
 # Constraint 3 — K8sBlockLatestTag
 kind: K8sBlockLatestTag
 name: demo-no-latest-tag
-# match: Pods in demo namespace
+# same namespaceSelector pattern
 
 # Constraint 4 — K8sBlockRootUser
 kind: K8sBlockRootUser
 name: demo-no-root-user
-# match: Pods in demo namespace
+# same namespaceSelector pattern
 
 # Constraint 5 — K8sBlockHostNetwork
 kind: K8sBlockHostNetwork
 name: demo-no-host-network
-# match: Pods in demo namespace
+# same namespaceSelector pattern
 
 # Constraint 6 — K8sAllowedRegistries
 kind: K8sAllowedRegistries
 name: demo-trusted-registries
+# same namespaceSelector pattern
 parameters:
   registries:
   - "ghcr.io/zacknguyn/"              # Your own GHCR
@@ -1271,7 +1277,25 @@ To onboard a third team: `kubectl create ns team-c` + `kubectl label ns team-c g
 
 ---
 
-## 5. File Map Summary
+## 5. Gatekeeper Webhook Fix
+
+After every `helm install gatekeeper ...` or full cluster reinstall, the webhook service selector
+may point to the wrong revision label. Symptoms: constraints don't enforce despite correct Rego.
+
+```bash
+# Fix: update webhook svc selector to match current pod release label
+WEBHOOK_POD_RELEASE=$(kubectl get pods -n gatekeeper-system \
+  -l control-plane=controller-manager -o jsonpath='{.items[0].metadata.labels.release}')
+kubectl get svc gatekeeper-webhook-service -n gatekeeper-system -o json | \
+  jq --arg rel "$WEBHOOK_POD_RELEASE" '.spec.selector.release = $rel' | \
+  kubectl replace -f -
+```
+
+Without this fix, the webhook is unreachable and no constraints fire.
+
+---
+
+## 6. File Map Summary
 
 | File | Purpose |
 |---|---|

@@ -6,9 +6,9 @@
 |---|---|---|
 | **ArgoCD** | GitOps operator | Watches a Git repo and syncs Kubernetes manifests automatically. The "source of truth" is git, not kubectl. Deploy, rollback, and drift detection are all driven by commits. |
 | **Argo Rollouts** | Progressive delivery controller | Like a Deployment but with canary/blue-green strategies. Instead of all pods switching at once, a Rollout shifts traffic gradually (10%→50%→100%) and auto-rolls back if metrics look bad. |
-| **Gatekeeper** | Admission webhook (OPA/Rego) | Intercepts every `kubectl apply` and checks it against Rego policies before allowing it. If a pod violates a rule (no limits, root user, wrong registry), Gatekeeper rejects it with a message explaining why. |
+| **Gatekeeper** | Admission webhook (OPA/Rego) | Intercepts every `kubectl apply` and checks it against Rego policies before allowing it. If a pod violates a rule (no limits, root user, wrong registry), Gatekeeper rejects it with a message explaining why. Constraints use `namespaceSelector` with `gatekeeper: enforced` label — any namespace with this label inherits all policies automatically. |
 | **External Secrets Operator (ESO)** | Kubernetes operator | Reads secrets from external APIs (AWS Secrets Manager) and creates native Kubernetes Secrets from them. Keeps secrets synced every N seconds — update the secret in AWS, it updates in K8s automatically. |
-| **Sigstore Policy Controller** | Admission webhook (Cosign) | Intercepts every pod creation and verifies the container image's cryptographic signature. If the image matches a policy rule (e.g. `ghcr.io/user/w10-api@*`) but isn't signed with the matching private key, the pod is rejected. |
+| **Sigstore Policy Controller** | Admission webhook (Cosign) | Intercepts every pod creation and verifies the container image's cryptographic signature. If the image matches a policy rule (e.g. `ghcr.io/user/w10-api@*`) but isn't signed with the matching private key, the pod is rejected. A catch-all `allow-all-other` passes all non-w10 images. |
 | **Prometheus Operator + kube-prometheus-stack** | Monitoring stack (Prometheus + AlertManager + Grafana) | Collects metrics from pods (CPU, memory, request rates), evaluates alert rules (e.g. success rate < 95%), and sends notifications (email via AlertManager). ServiceMonitor CRDs tell Prometheus which pods to scrape. |
 
 ## CI/CD & Security Tools
@@ -79,3 +79,11 @@ When you run `kubectl apply -f pod.yaml`, the request goes through this pipeline
 ```
 
 Step 3 (Gatekeeper) and Step 4 (Sigstore) are the two admission webhooks added by this project.
+
+## Rego Notes
+
+Common pitfalls when writing custom Gatekeeper policies:
+
+- **Set comprehension**: `{label | label = input.parameters.labels[_]}` does NOT iterate in Gatekeeper 3.17.0 — use `{label | some i; label := input.parameters.labels[i]}` instead.
+- **Set subtraction**: both operands must be sets. `provided := input.review.object.metadata.labels` is an **object** `{"key":"val"}` — use `provided := {key | input.review.object.metadata.labels[key]}` to get a set of keys.
+- **Parameter path**: `input.parameters.<field>` — not `input.constraint.spec.<field>`.

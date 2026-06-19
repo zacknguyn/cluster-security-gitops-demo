@@ -1,273 +1,163 @@
-# W10 - Cluster Security GitOps Demo
+# W10 — Cluster Security GitOps Demo
 
-GitOps setup for API deployment với Argo Rollouts + AnalysisTemplate.
+GitOps setup for a production-ready Kubernetes cluster with RBAC, OPA/Gatekeeper admission policies, External Secrets Operator (ESO), Trivy + Cosign supply chain security, and a multi-tenant challenge.
 
-## Concept
+## Architecture
 
-Deploy API với **canary strategy** và **automated analysis**:
-- Rollout: 10% → 50% → 100%
-- AnalysisTemplate query Prometheus để check success rate ≥ 95%
-- Auto rollback nếu analysis fail
-- AlertManager gửi email khi có SLO violation
+```
+GitHub (source of truth)
+  │ git push
+  ▼
+ArgoCD (polls repo → syncs cluster state)
+  │
+  ├── app-common/    → demo namespace
+  ├── k8s-rollouts/  → Argo Rollouts controller
+  ├── kube-prometheus/→ Prometheus + AlertManager + Grafana
+  ├── rbac/          → 3 ClusterRoles + bindings
+  ├── gatekeeper/    → 6 constraint templates + constraints
+  ├── alert/         → SLO PrometheusRule
+  ├── analysis/      → AnalysisTemplate for canary
+  ├── api/           → Rollout + Service + ServiceMonitor
+  ├── eso-config/    → SecretStore + ExternalSecret
+  ├── policies/      → ClusterImagePolicy (Sigstore)
+  ├── payments/      → tenant infra (wave -1)
+  └── payments-app/  → tenant workload (wave 2)
+```
 
-## Requirements
+## What's Implemented
 
-- Docker Desktop
-- kubectl
-- minikube
-- git
+### RBAC — 3 Roles
+| Role | Scope | Permissions |
+|---|---|---|
+| `developer` | ns `demo` | CRUD on pods, services, deployments |
+| `sre` | cluster-wide | Same as developer + secrets, nodes, delete |
+| `viewer` | cluster-wide | Read-only (get/list/watch) |
+
+### Gatekeeper — 6 Admission Constraints
+| Constraint | Rego | Blocks |
+|---|---|---|
+| `K8sRequiredLabels` | Custom | Pods missing `owner` label |
+| `K8sRequiredResources` | Library | Pods without `resources.limits` |
+| `K8sBlockLatestTag` | Library | Images using `:latest` tag |
+| `K8sBlockRootUser` | Library | `runAsUser: 0` |
+| `K8sBlockHostNetwork` | Library | `hostNetwork: true` |
+| `K8sAllowedRegistries` | Custom | Images from untrusted registries |
+
+All constraints use `namespaceSelector.matchLabels.gatekeeper: enforced` — any namespace with this label gets them automatically.
+
+### External Secrets Operator
+- **SecretStore**: connects to AWS Secrets Manager (`us-west-2`)
+- **ExternalSecret**: syncs `w10/db-password` every 60s, no pod restart needed
+- **Terraform**: provisions IAM user, access key, and Secrets Manager secret
+
+### Supply Chain Security
+- **Trivy**: scans image in CI, fails on CRITICAL/HIGH CVEs
+- **Cosign**: signs image with private key after scan passes
+- **Sigstore Policy Controller**: verifies signature at admission, blocks unsigned images
+- **Catch-all**: `allow-all-other` passes all non-w10 images
+
+### Multi-Tenant Challenge — `payments` namespace
+| # | Task | Proof |
+|---|---|---|
+| 1 | RBAC least-privilege (`Role`+`RoleBinding`, no secrets) | `auth can-i` — create in payments=yes, demo=no |
+| 2 | ResourceQuota + LimitRange | Quota exceeded → Forbidden |
+| 3 | NetworkPolicy isolation | Default-deny ingress + restrict egress |
+| 4 | Gatekeeper auto-apply via `gatekeeper: enforced` label | Existing constraints block violations in payments |
 
 ## Structure
 
 ```
-w10/
-├── app-api/              # API Rollout manifests
-│   ├── rollout.yaml      # Argo Rollout với canary strategy
-│   ├── service.yaml      # Service expose API
-│   └── servicemonitor.yaml # Prometheus metrics scraper
-├── app-analysis/         # Analysis manifests
-│   └── analysis-template.yaml # Template phân tích success rate
-├── app-alert/            # Alert manifests
-│   ├── prometheus-rules.yaml # PrometheusRule cho SLO alerts
-│   ├── email-secret.yaml # Gmail password (NOT COMMITTED)
-│   └── README.md         # Alert setup guide
-├── app-common/           # Common resources
-│   └── demo-namespace.yaml # Namespace demo
-├── src/                  # Source code
-│   └── api/              # Flask API application
+.
+├── app-api/                 # Team A Rollout + Service + ServiceMonitor
+├── app-analysis/            # AnalysisTemplate (canary success rate)
+├── app-alert/               # PrometheusRule SLO alerts
+├── app-common/              # demo namespace
+├── apps/payments/           # Team B Rollout + Service
 ├── argocd/
-│   ├── apps/             # ArgoCD Application manifests
-│   │   ├── app-api.yaml  # Deploy API Rollout
-│   │   ├── app-analysis.yaml # Deploy AnalysisTemplate
-│   │   ├── app-alert.yaml # Deploy PrometheusRule
-│   │   ├── app-common.yaml # Deploy common resources
-│   │   ├── k8s-prometheus.yaml # Prometheus + AlertManager
-│   │   └── k8s-rollout.yaml # Argo Rollouts controller
-│   └── root.yaml         # App of Apps pattern
-└── README.md
+│   ├── apps/                # 13 child Application YAMLs
+│   ├── rbac/                # ClusterRoles + bindings
+│   └── gatekeeper/          # 6 ConstraintTemplates + constraints
+├── eso/                     # SecretStore + ExternalSecret
+├── signing/                 # ClusterImagePolicy + catch-all
+├── tenants/payments/        # RBAC + quota + limitrange + netpol
+├── terraform/               # AWS IAM + Secrets Manager
+├── src/api/                 # Flask app source + Dockerfile
+├── evidence/                # Screenshots for delivery
+├── .github/workflows/       # CI/CD: build → Trivy → sign → deploy
+├── GLOSSARY.md              # Component definitions
+├── SYSTEMS.md               # Architecture + code walkthrough
+├── SETUP.md                 # Full install guide
+└── evidence.md              # Evidence checklist
 ```
 
-## Quick Start
+## Quick Install
 
-### 1. Setup Cluster
 ```bash
-minikube start -p w10 --driver=docker
-kubectl config use-context w10
-```
+# 1. Start cluster
+minikube start -p w10 --cpus=2 --memory=4096
 
-### 2. Install ArgoCD
-```bash
+# 2. Install ArgoCD
 kubectl create ns argocd
 kubectl apply --server-side -n argocd \
   -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl -n argocd rollout status deploy/argocd-server
-```
 
-### 3. Access ArgoCD UI
-```bash
-# Port forward
-kubectl -n argocd port-forward svc/argocd-server 8080:443 &
+# 3. Gatekeeper & ESO operators (Helm, not ArgoCD — CRD conflict)
+helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts
+helm install gatekeeper gatekeeper/gatekeeper -n gatekeeper-system --create-namespace
+helm repo add external-secrets https://charts.external-secrets.io
+helm install external-secrets external-secrets/external-secrets -n external-secrets --create-namespace
+helm install sigstore policy-controller \
+  https://github.com/sigstore/policy-controller/releases/download/v0.9.0/policy-controller-0.9.0.tgz \
+  -n cosign-system --create-namespace
 
-# Get password
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' | base64 -d; echo
-```
+# 4. Fix Gatekeeper webhook selector after Helm install
+WEBHOOK_POD_RELEASE=$(kubectl get pods -n gatekeeper-system \
+  -l control-plane=controller-manager -o jsonpath='{.items[0].metadata.labels.release}')
+kubectl get svc gatekeeper-webhook-service -n gatekeeper-system -o json | \
+  jq --arg rel "$WEBHOOK_POD_RELEASE" '.spec.selector.release = $rel' | \
+  kubectl replace -f -
 
-### STEP PHẢI LÀM ĐỂ APP API CHẠY ĐƯỢC
-Step 1: Phải build image:
-- Dùng Github Action tại `.github/workflows/build-push.yml` để build image.
-- Hoặc build local và đẩy lên k8s
-
-Step 2: Phải đổi image name dòng `24` trong file `app-api/rollout.yaml` thành image các bạn đã build
-
-> Note 1: Fork repo thì sẽ không active được Github Action
-
-> Note 2: Nên clone repo template này về sau đó đẩy lên 1 repo của các bạn
-
-> Note 3: Phải đổi đúng image mà các bạn đã build nhé
-
-### 4. Deploy App of Apps
-```bash
+# 5. Apply root app
 kubectl apply -f argocd/root.yaml
-```
 
-### 5. Setup Email Alert
-```bash
-# Follow instructions in app-alert/README.md
-cp app-alert/email-secret.yaml.example app-alert/email-secret.yaml
-kubectl apply -f app-alert/email-secret.yaml
-```
-
-## Components
-
-### Core
-- **Argo Rollouts**: Progressive delivery controller
-- **Prometheus Stack**: Metrics collection + AlertManager
-- **API**: Flask application với metrics endpoint
-
-### GitOps Applications
-- `app-api`: API Rollout với canary strategy
-- `app-analysis`: AnalysisTemplate cho automated validation
-- `app-alert`: PrometheusRule cho runtime alerting
-- `app-common`: Shared resources (namespace)
-- `k8s-prometheus`: Monitoring stack
-- `k8s-rollout`: Argo Rollouts controller
-
-## Verify Deployment
-
-### Check Rollout Status
-```bash
-# Watch rollout progress
-kubectl get rollout api -n demo -w
-
-# Check current state
-kubectl get rollout api -n demo
-
-# Check pods
-kubectl get pods -n demo -l app=api
-```
-
-### Check AnalysisRun
-```bash
-# List analysis runs
-kubectl get analysisrun -n demo
-
-# Watch latest analysis
-kubectl get analysisrun -n demo --sort-by=.metadata.creationTimestamp | tail -1
-
-# Describe for detailed metrics
-kubectl describe analysisrun -n demo <name>
-```
-
-### Query Prometheus Metrics
-```bash
-# Success rate metric
-kubectl run test-query --image=curlimages/curl:latest --rm -i --restart=Never -n monitoring -- \
-  curl -s 'http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/query?query=api:success_rate:5m'
-```
-
-## Test Scenarios (GitOps)
-
-### Test 1: Successful Deployment (Success Rate ≥ 90%)
-```bash
-# Edit rollout to deploy with no errors
-nano app-api/rollout.yaml
-# Set: ERROR_RATE: "0"
-
-git add app-api/rollout.yaml
-git commit -m "test: deploy with 0% error rate"
-git push origin main
-
-# Watch AnalysisRun succeed
-kubectl get analysisrun -n demo -w
-```
-
-### Test 2: Failed Deployment (Success Rate < 90%)
-```bash
-# Edit rollout to deploy with 15% error rate
-nano app-api/rollout.yaml
-# Set: ERROR_RATE: "0.15"
-
-git add app-api/rollout.yaml
-git commit -m "test: deploy with 15% error rate (should fail)"
-git push origin main
-
-# Watch AnalysisRun fail and auto rollback
-kubectl get analysisrun -n demo -w
-kubectl get rollout api -n demo
-```
-
-### Test 3: Trigger SLO Alert Email
-```bash
-# Edit rollout to set 10% error rate (triggers alert, but passes canary)
-nano app-api/rollout.yaml
-# Set: ERROR_RATE: "0.10"
-
-git add app-api/rollout.yaml
-git commit -m "test: deploy with 10% error rate (90% success)"
-git push origin main
-
-# Canary passes (≥90%) but SLO alert fires (below 95%)
-# Wait 2-3 minutes, then check email inbox
-```
-
-
-## Configuration Reference
-
-### Sync Waves
-ArgoCD applications deploy in order:
-- Wave -1: `app-common` (namespace)
-- Wave 0: `k8s-prometheus`, `k8s-rollout` (infrastructure)
-- Wave 1: `app-analysis`, `app-alert` (configuration)
-- Wave 2: `app-api` (application)
-
-### Challenge — Onboard team `payments` (multi-tenant isolation)
-
-Add a new tenant `payments` with full isolation from `demo`.
-
-### Deliverables
-
-```
-tenants/payments/      # namespace, rbac, quota, limitrange, networkpolicy
-apps/payments/         # workload for team B (Rollout + Service)
-argocd/apps/           # payments.yaml + payments-app.yaml
-evidence/              # 4 proofs (screenshots/logs)
-```
-
-### 4 Tasks
-
-| # | Task | Proof |
-|---|---|---|
-| 1 | Namespace `payments` + RBAC least-privilege (`Role`+`RoleBinding`, no secrets/rolebindings) | `kubectl auth can-i` — create deploy in payments=yes, in demo=no |
-| 2 | ResourceQuota + LimitRange | Pod exceeding quota → denied; pod without limits → gets default |
-| 3 | NetworkPolicy isolation (default-deny ingress + restrict egress) | Pod in payments calling `api.demo.svc` → blocked (needs Calico CNI) |
-| 4 | Deploy app via GitOps + Gatekeeper constraints auto-apply (no new rules) | Valid app runs; violating manifest blocked by existing constraints |
-
-### Setup
-
-```bash
+# 6. Label namespaces
 kubectl label ns demo gatekeeper=enforced --overwrite
 kubectl label ns payments gatekeeper=enforced
 ```
 
-### Evidence Commands
+## Verify
 
 ```bash
-# 1. RBAC isolation
-kubectl auth can-i create deployments -n payments --as payments-dev
-kubectl auth can-i create deployments -n demo --as payments-dev
-kubectl auth can-i get secrets -n payments --as payments-dev
+# RBAC
+kubectl auth can-i create deployments -n demo --as alice
+kubectl auth can-i delete nodes --as carol
 
-# 2. Quota enforcement
-kubectl run exceed --image=registry.k8s.io/pause:3.10 -n payments \
-  --labels=owner=test --requests=cpu=4,memory=8Gi \
-  --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"4","memory":"8Gi"},"requests":{"cpu":"4","memory":"8Gi"}}}]}}'
-
-# 3. Network isolation
-kubectl run test-curl --image=curlimages/curl:latest -n payments \
-  --labels=owner=test --rm -it --restart=Never -- curl -s --connect-timeout 3 http://api.demo.svc
-
-# 4. Gatekeeper auto-enforce
+# Gatekeeper (should be denied)
 kubectl run bad --image=nginx:latest -n payments --restart=Never
+
+# K8sRequiredLabels (should be denied - no owner label)
+kubectl run test --image=registry.k8s.io/pause:3.10 -n payments \
+  --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'
+
+# ESO secret sync
+kubectl get secret db-password -n demo -o jsonpath='{.data.password}' | base64 -d
+
+# Sigstore (unsigned image should be denied)
+kubectl run unsigned --image=gcr.io/google-samples/hello-app:1.0 -n demo --restart=Never
 ```
 
----
+## Evidence
 
-## Cleanup
+See `evidence.md` for the complete screenshot checklist to submit.
 
-```bash
-# Delete ArgoCD applications
-kubectl delete -f argocd/root.yaml
+## Tools
 
-# Wait for resources to be cleaned up
-kubectl get all -n demo
-kubectl get all -n monitoring
-
-# Delete ArgoCD
-kubectl delete ns argocd
-
-# Stop minikube
-minikube stop -p w10
-minikube delete -p w10
-```
-
+- **ArgoCD** — GitOps operator, app-of-apps pattern
+- **Argo Rollouts** — Canary deployments with automated analysis
+- **Gatekeeper** — OPA/Rego admission webhook
+- **External Secrets Operator** — AWS Secrets Manager sync
+- **Sigstore Policy Controller** — Cosign signature verification
+- **Trivy** — Container vulnerability scanner
+- **Cosign** — Container image signing
+- **Prometheus Stack** — Metrics, alerts, SLO monitoring

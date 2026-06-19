@@ -1,112 +1,176 @@
-# Evidence Checklist
+# W10 — Project Introduction & Evidence
 
-Take screenshots of each of the following and place them in `evidence/`. Use the naming convention below.
+## Giới thiệu
 
-## 1. RBAC — 3 Roles Verified
+Dự án này triển khai một Kubernetes cluster **production-ready** với GitOps, bảo mật đa tầng, và multi-tenant isolation.
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/rbac-alice.png` | `kubectl auth can-i create deployments -n demo --as alice` | `yes` |
-| `evidence/rbac-alice-deny.png` | `kubectl auth can-i create deployments -n kube-system --as alice` | `no` |
-| `evidence/rbac-bob.png` | `kubectl auth can-i get pods -A --as bob` | `yes` |
-| `evidence/rbac-carol.png` | `kubectl auth can-i delete nodes --as carol` | `no` |
+**Kiến trúc tổng quan:**
 
-## 2. Gatekeeper — 6 Constraints Enforced
+```
+GitHub (source of truth)
+  │ git push
+  ▼
+ArgoCD (GitOps — tự động sync cluster từ repo)
+  │
+  ├── RBAC              → 3 roles: developer, sre, viewer
+  ├── Gatekeeper        → 6 OPA/Rego constraints chặn manifest xấu
+  ├── ESO               → Secret tự động đồng bộ từ AWS Secrets Manager
+  ├── Sigstore/Cosign   → Verify chữ ký image trước khi deploy
+  ├── Prometheus Stack  → Metrics + SLO alerts + canary analysis
+  └── Payments tenant   → Multi-tenant isolation (Challenge)
+```
 
-### 2a. K8sRequiredLabels
+**Công nghệ sử dụng:** Kubernetes, ArgoCD, Argo Rollouts, OPA Gatekeeper, External Secrets Operator, Sigstore Policy Controller, Cosign, Trivy, Prometheus, Terraform.
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-labels-deny.png` | `kubectl run test-label --image=registry.k8s.io/pause:3.10 -n payments --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'` | `Forbidden: missing labels: {"owner"}` |
-| `evidence/gk-labels-allow.png` | `kubectl run test-label --image=registry.k8s.io/pause:3.10 -n payments --labels=owner=test --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'` | `pod/test-label created` |
+---
 
-### 2b. K8sRequiredResources
+## Lab 1 — RBAC + Gatekeeper (Buổi sáng)
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-limits-deny.png` | `kubectl run no-limits --image=registry.k8s.io/pause:3.10 -n demo --labels=owner=test` | `Forbidden: container ... must specify resource limits` |
+### Đã làm
+- 3 ClusterRoles (`developer`, `sre`, `viewer`) + bindings, phân quyền rõ ràng
+- Gatekeeper operator cài qua Helm, 6 ConstraintTemplates + Constraints:
+  - `K8sRequiredLabels` — bắt buộc label `owner`
+  - `K8sRequiredResources` — bắt buộc `resources.limits`
+  - `K8sBlockLatestTag` — cấm tag `:latest`
+  - `K8sBlockRootUser` — cấm `runAsUser: 0`
+  - `K8sBlockHostNetwork` — cấm `hostNetwork: true`
+  - `K8sAllowedRegistries` — chỉ cho phép registry tin cậy (custom Rego)
+- Constraint dùng `namespaceSelector` với label `gatekeeper: enforced` — namespace mới tự động thừa hưởng
 
-### 2c. K8sBlockLatestTag
+### Tự kiểm
+```
+✅ auth can-i khớp đúng 3 role
+✅ 6 constraint reject vi phạm, pass hợp lệ
+✅ Platform xanh sau khi bật enforce
+✅ Mọi thứ qua git → ArgoCD Synced
+```
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-latest-deny.png` | `kubectl run bad-tag --image=nginx:latest -n payments --labels=owner=test --restart=Never` | `Forbidden: uses :latest tag` |
+---
 
-### 2d. K8sBlockRootUser
+## Lab 2 — ESO + Supply Chain (Buổi chiều)
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-rootuser-deny.png` | `kubectl run root-pod --image=registry.k8s.io/pause:3.10 -n demo --labels=owner=test --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","securityContext":{"runAsUser":0},"resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'` | `Forbidden: running as root` |
+### Đã làm
+- **ESO**: SecretStore + ExternalSecret sync `w10/db-password` từ AWS Secrets Manager, refresh 60s
+- **Terraform**: IAM user `eso-sync` + access key + Secrets Manager secret
+- **Trivy**: Scan image trong CI, fail nếu CVE CRITICAL/HIGH
+- **Cosign**: Ký image sau khi scan pass
+- **Sigstore Policy Controller**: Verify chữ ký tại admission, chặn image chưa ký
+- **Catch-all policy**: `allow-all-other` cho image không phải w10
 
-### 2e. K8sBlockHostNetwork
+### Tự kiểm
+```
+✅ ESO rotate < 60s, pod không restart
+✅ CI đỏ khi CVE HIGH
+✅ Unsigned image bị reject
+✅ git log -p | grep -i password → không lộ secret
+```
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-hostnet-deny.png` | `kubectl run hostnet --image=registry.k8s.io/pause:3.10 -n demo --labels=owner=test --overrides='{"spec":{"hostNetwork":true,"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'` | `Forbidden: hostNetwork: true` |
+---
 
-### 2f. K8sAllowedRegistries
+## Challenge — Onboard team `payments` (Take-home 24h)
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/gk-registry-deny.png` | `kubectl run bad-reg --image=unknown.registry.io/pause:1.0 -n payments --labels=owner=test --restart=Never --overrides='{"spec":{"containers":[{"name":"pause","image":"unknown.registry.io/pause:1.0","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'` | `Forbidden: uses untrusted registry` |
+### Nộp gì
 
-## 3. ESO — External Secrets
+```
+tenants/payments/   # ns · rbac · quota · netpol
+apps/payments/      # workload team B
+argocd/apps/        # payments.yaml (infra) + payments-app.yaml (app)
+evidence/           # 4 proofs with screenshots/logs
+README.md           # explanation
+```
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/eso-secret.png` | `kubectl get secret db-password -n demo -o jsonpath='{.data.password}' \| base64 -d` | `P@ssw0rd123` |
-| `evidence/eso-secretstore.png` | `kubectl get secretstore -n demo` | `aws-secret-store` |
-| `evidence/eso-externalsecret.png` | `kubectl get externalsecret -n demo` | `db-password` |
+### 4 chứng minh (ĐẠT — đủ cả 4)
 
-## 4. Supply Chain — Trivy + Cosign + Sigstore
+#### 1. RBAC isolation — `payments-dev`
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/sigstore-unsigned-deny.png` | `kubectl run unsigned --image=gcr.io/google-samples/hello-app:1.0 -n demo --restart=Never` | `Forbidden by ClusterImagePolicy` |
-| `evidence/sigstore-signed-allow.png` | App deployed by ArgoCD (w10-api image) | Pod Running |
-| `evidence/ci-trivy.png` | GitHub Actions workflow run (screenshot from Actions tab) | Trivy step passes |
-| `evidence/ci-cosign.png` | GitHub Actions workflow run | Cosign sign step succeeds |
+```
+kubectl auth can-i create deployments -n payments --as payments-dev     → yes
+kubectl auth can-i create deployments -n demo --as payments-dev         → no
+kubectl auth can-i get secrets -n payments --as payments-dev            → no
+kubectl auth can-i create rolebindings -n payments --as payments-dev    → no
+```
 
-## 5. Challenge — Multi-Tenant `payments`
+> Screenshot: `evidence/challenge-rbac.png`
 
-### 5a. RBAC Isolation
+#### 2. ResourceQuota + LimitRange
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/challenge-rbac-create.png` | `kubectl auth can-i create deployments -n payments --as payments-dev` | `yes` |
-| `evidence/challenge-rbac-demo.png` | `kubectl auth can-i create deployments -n demo --as payments-dev` | `no` |
-| `evidence/challenge-rbac-secrets.png` | `kubectl auth can-i get secrets -n payments --as payments-dev` | `no` |
-| `evidence/challenge-rbac-rolebindings.png` | `kubectl auth can-i create rolebindings -n payments --as payments-dev` | `no` |
+```
+kubectl get resourcequota -n payments
+  → payments-quota: 2 CPU / 4Gi memory / 10 pods
 
-### 5b. ResourceQuota
+# Vượt quota → bị từ chối
+kubectl run exceed --image=registry.k8s.io/pause:3.10 -n payments \
+  --labels=owner=test --requests=cpu=4,memory=8Gi \
+  --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"4","memory":"8Gi"},"requests":{"cpu":"4","memory":"8Gi"}}}]}}'
+  → Forbidden: exceeded quota
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/challenge-quota.png` | `kubectl get resourcequota -n payments` | Hard limits shown |
-| `evidence/challenge-quota-deny.png` | `kubectl run exceed --image=registry.k8s.io/pause:3.10 -n payments --labels=owner=test --requests=cpu=4,memory=8Gi --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"4","memory":"8Gi"},"requests":{"cpu":"4","memory":"8Gi"}}}]}}'` | `Forbidden: exceeded quota` |
+# Pod thiếu limits vẫn chạy nhờ LimitRange
+kubectl run no-limits --image=registry.k8s.io/pause:3.10 -n payments \
+  --labels=owner=test
+  → pod/no-limits created (LimitRange injects defaults)
+```
 
-### 5c. NetworkPolicy
+> Screenshot: `evidence/challenge-quota.png`
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/challenge-netpol.png` | `kubectl get networkpolicy -n payments` | `default-deny-ingress` and `restrict-egress` |
+#### 3. NetworkPolicy — cô lập
 
-### 5d. Gatekeeper Auto-Apply
+```
+kubectl get networkpolicy -n payments
+  → default-deny-ingress   (chặn ai gọi vào payments)
+  → restrict-egress        (chỉ gọi trong payments + DNS)
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/challenge-gk-deny.png` | `kubectl run bad --image=nginx:latest -n payments --restart=Never` | `Forbidden: uses :latest tag` (the same rule from Lab 1.2 applies in payments without creating a new constraint) |
-| `evidence/challenge-ns-label.png` | `kubectl get ns payments -o jsonpath='{.metadata.labels}'` | `"gatekeeper":"enforced"` |
+# Pod trong payments không gọi được api.demo.svc
+kubectl run test-curl --image=curlimages/curl:latest -n payments \
+  --labels=owner=test --rm -it --restart=Never -- \
+  curl -s --connect-timeout 3 http://api.demo.svc
+  → Connection timed out (nếu CNI enforce)
+```
 
-## 6. ArgoCD Applications — All Synced
+> Screenshot: `evidence/challenge-netpol.png`
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/argocd-apps.png` | `argocd app list` or ArgoCD UI screenshot | All apps `Synced` and `Healthy` |
-| `evidence/argocd-tree.png` | ArgoCD UI showing app dependency tree | Correct sync wave order |
+#### 4. Gatekeeper tự động áp dụng (quan trọng nhất)
 
-## 7. Git Repo — Clean
+Constraint dùng `namespaceSelector.matchLabels.gatekeeper: enforced` — không hardcode namespace.
 
-| Screenshot | Command | Expected |
-|---|---|---|
-| `evidence/git-clean.png` | `grep -ri password . --include="*.yaml" --include="*.yml" \| grep -v secretStoreRef \| grep -v .git \| grep -v secretRef \| grep -v argocd` | No real secrets in git |
+```
+# payments namespace có label
+kubectl get ns payments -o jsonpath='{.metadata.labels}'
+  → {"gatekeeper":"enforced","kubernetes.io/metadata.name":"payments"}
+
+# Constraint cũ tự động chặn vi phạm trong payments (không cần tạo luật mới)
+kubectl run bad --image=nginx:latest -n payments --restart=Never
+  → Forbidden: uses :latest tag
+
+kubectl run bad --image=unknown.registry.io/pause:1.0 -n payments \
+  --labels=owner=test --restart=Never \
+  --overrides='{"spec":{"containers":[{"name":"pause","image":"unknown.registry.io/pause:1.0","resources":{"limits":{"cpu":"100m","memory":"128Mi"}}}]}}'
+  → Forbidden: uses untrusted registry
+```
+
+> Screenshot: `evidence/challenge-gk-auto-enforce.png`
+
+### Vì sao guardrail cũ tự áp cho team B?
+
+Constraint chuyển từ `namespaces: ["demo"]` sang `namespaceSelector.matchLabels.gatekeeper: enforced`. Khi namespace `payments` có label `gatekeeper: enforced`, tất cả 6 constraint tự động match. Thêm team mới: chỉ cần `kubectl label ns team-c gatekeeper=enforced`.
+
+### Vì sao Role/RoleBinding giữ cô lập?
+
+`Role` + `RoleBinding` là namespaced — user `payments-dev` chỉ có quyền trong namespace `payments`. Không dùng `ClusterRole`/`ClusterRoleBinding` vì sẽ cho quyền sang namespace khác (vd `demo`). Role cũng không cấp `secrets` hay `rolebindings` để tránh leo thang đặc quyền.
+
+---
+
+## Evidence screenshots
+
+Place these in `evidence/`:
+
+| File | Nội dung |
+|---|---|
+| `challenge-rbac.png` | 4 lệnh `auth can-i` cho payments-dev |
+| `challenge-quota.png` | Quota hiện tại + lệnh vượt quota bị chặn |
+| `challenge-netpol.png` | `kubectl get networkpolicy -n payments` |
+| `challenge-gk-auto-enforce.png` | Vi phạm bị constraint cũ chặn trong payments |
+| `rbac-roles.png` | 3 role verified (alice, bob, carol) |
+| `gatekeeper-constraints.png` | 6 constraint đều deny |
+| `eso-secret.png` | Secret sync từ AWS |
+| `sigstore-deny.png` | Unsigned image bị chặn |
+| `argocd-synced.png` | Tất cả app Synced/Healthy |

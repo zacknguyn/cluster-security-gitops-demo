@@ -1,4 +1,4 @@
-# W10 - Progressive Delivery with Analysis
+# W10 - Cluster Security GitOps Demo
 
 GitOps setup for API deployment với Argo Rollouts + AnalysisTemplate.
 
@@ -200,6 +200,58 @@ ArgoCD applications deploy in order:
 - Wave 0: `k8s-prometheus`, `k8s-rollout` (infrastructure)
 - Wave 1: `app-analysis`, `app-alert` (configuration)
 - Wave 2: `app-api` (application)
+
+### Challenge — Onboard team `payments` (multi-tenant isolation)
+
+Add a new tenant `payments` with full isolation from `demo`.
+
+### Deliverables
+
+```
+tenants/payments/      # namespace, rbac, quota, limitrange, networkpolicy
+apps/payments/         # workload for team B (Rollout + Service)
+argocd/apps/           # payments.yaml + payments-app.yaml
+evidence/              # 4 proofs (screenshots/logs)
+```
+
+### 4 Tasks
+
+| # | Task | Proof |
+|---|---|---|
+| 1 | Namespace `payments` + RBAC least-privilege (`Role`+`RoleBinding`, no secrets/rolebindings) | `kubectl auth can-i` — create deploy in payments=yes, in demo=no |
+| 2 | ResourceQuota + LimitRange | Pod exceeding quota → denied; pod without limits → gets default |
+| 3 | NetworkPolicy isolation (default-deny ingress + restrict egress) | Pod in payments calling `api.demo.svc` → blocked (needs Calico CNI) |
+| 4 | Deploy app via GitOps + Gatekeeper constraints auto-apply (no new rules) | Valid app runs; violating manifest blocked by existing constraints |
+
+### Setup
+
+```bash
+kubectl label ns demo gatekeeper=enforced --overwrite
+kubectl label ns payments gatekeeper=enforced
+```
+
+### Evidence Commands
+
+```bash
+# 1. RBAC isolation
+kubectl auth can-i create deployments -n payments --as payments-dev
+kubectl auth can-i create deployments -n demo --as payments-dev
+kubectl auth can-i get secrets -n payments --as payments-dev
+
+# 2. Quota enforcement
+kubectl run exceed --image=registry.k8s.io/pause:3.10 -n payments \
+  --labels=owner=test --requests=cpu=4,memory=8Gi \
+  --overrides='{"spec":{"containers":[{"name":"pause","image":"registry.k8s.io/pause:3.10","resources":{"limits":{"cpu":"4","memory":"8Gi"},"requests":{"cpu":"4","memory":"8Gi"}}}]}}'
+
+# 3. Network isolation
+kubectl run test-curl --image=curlimages/curl:latest -n payments \
+  --labels=owner=test --rm -it --restart=Never -- curl -s --connect-timeout 3 http://api.demo.svc
+
+# 4. Gatekeeper auto-enforce
+kubectl run bad --image=nginx:latest -n payments --restart=Never
+```
+
+---
 
 ## Cleanup
 

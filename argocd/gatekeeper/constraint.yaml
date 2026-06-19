@@ -8,7 +8,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
   parameters:
     labels: ["owner"]
 
@@ -23,7 +25,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
 
 ---
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -36,7 +40,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
 
 ---
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -49,7 +55,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
 
 ---
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -62,7 +70,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
 
 ---
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -75,7 +85,9 @@ spec:
     kinds:
     - apiGroups: [""]
       kinds: ["Pod"]
-    namespaces: ["demo"]
+    namespaceSelector:
+      matchLabels:
+        gatekeeper: enforced
   parameters:
     registries:
     - "ghcr.io/zacknguyn/"

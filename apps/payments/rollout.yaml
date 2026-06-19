@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payments-app
+  namespace: payments
+  labels:
+    app: payments-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payments-api
+  template:
+    metadata:
+      labels:
+        app: payments-api
+        owner: payments-team
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/zacknguyn/w10-api:0.0.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: VERSION
+          value: "v0.0.1"
+        - name: ERROR_RATE
+          value: "0"
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+  strategy:
+    canary:
+      steps:
+      - setWeight: 50
+      - pause: {duration: 30s}
+      - setWeight: 100

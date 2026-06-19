@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: payments-dev
+  namespace: payments
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "pods/log"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: payments-dev-binding
+  namespace: payments
+subjects:
+- kind: User
+  name: payments-dev
+roleRef:
+  kind: Role
+  name: payments-dev
+  apiGroup: rbac.authorization.k8s.io

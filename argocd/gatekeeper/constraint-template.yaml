@@ -20,9 +20,9 @@ spec:
     rego: |
       package k8srequiredlabels
       violation[{"msg": msg, "details": details}] {
-        provided := input.review.object.metadata.labels
-        required := {label | some i; label := input.parameters.labels[i]}
-        missing := required - provided
+        provided_keys := {key | input.review.object.metadata.labels[key]}
+        required_labels := {label | some i; label := input.parameters.labels[i]}
+        missing := required_labels - provided_keys
         count(missing) > 0
         msg := sprintf("missing labels: %v", [missing])
         details := {"missing": missing}

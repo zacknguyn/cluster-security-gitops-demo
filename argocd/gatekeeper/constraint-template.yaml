@@ -21,7 +21,7 @@ spec:
       package k8srequiredlabels
       violation[{"msg": msg, "details": details}] {
         provided := input.review.object.metadata.labels
-        required := {label | label = input.constraint.spec.labels[_]}
+        required := {label | some i; label := input.parameters.labels[i]}
         missing := required - provided
         count(missing) > 0
         msg := sprintf("missing labels: %v", [missing])
